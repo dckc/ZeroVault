@@ -1,11 +1,12 @@
 #!/usr/local/bin/python3
 '''
 
->>> environ=dict(HTTPS='1', REQUEST_METHOD='POST')
->>> io = MockIO(stdin='password=sekret')
+>>> environ = dict(HTTPS='1', REQUEST_METHOD='POST')
+>>> io = MockIO(stdin=b'password=sekret')
 >>> cwd = Path('.', io.ops())
 
->>> main(io.stdin, io.stdout, environ, cwd, io.now, io.FileSystemLoader)
+>>> app = mk_app(cwd, io.now, io.FileSystemLoader)
+>>> body = app(environ, io.start_response)
 
 >>> print io.stdout.getvalue()
 ... # doctest: +ELLIPSIS
@@ -31,8 +32,12 @@ import json
 # CHANGE THIS SALT WHEN INSTALLED ON YOUR PERSONAL SERVER!
 serversalt = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOP"
 
+CT_HTML = ('Content-type', 'text/html')
+CT_PLAIN = ('Content-type', 'text/plain')
+
 
 def main(stdin, stdout, cwd, now, FileSystemLoader):
+    raise NotImplementedError
     # if 'SCRIPT_NAME' in environ: ...
     cgi_main(stdin, stdout, environ, cwd, now, FileSystemLoader)
 
@@ -40,7 +45,7 @@ def main(stdin, stdout, cwd, now, FileSystemLoader):
 def mk_app(cwd, now, FileSystemLoader):
     def app(environ, start_response):
         if "HTTPS" not in environ:
-            start_response('403')
+            start_response('403', [CT_PLAIN])
             return [err_unencrypted(environ.get('SERVERNAME'))]
 
         templates = (cwd / __file__).resolve().parent / 'templates'
@@ -52,20 +57,22 @@ def mk_app(cwd, now, FileSystemLoader):
         form = cgi.FieldStorage(fp=stdin, environ=environ)
         if "HTTP_COOKIE" not in environ:
             if "password" not in form:
-                reply_header(stdout)
+                start_response('200 OK', [CT_HTML])
                 context = {}
                 html = get_template('passwordform.html').render(context)
             else:
                 set_cookie, context = set_password(form["password"].value, now())
-                reply_header(stdout, header=set_cookie)
+                start_response('200 OK', [set_cookie.split(': ', 1)])
                 html = get_template('rumpeltree.html').render(context)
         else:
-            reply_header(stdout)
+            start_response('200 OK', [CT_HTML])
             context = vault_context(environ["HTTP_COOKIE"],
                                     cwd.resolve().parent / "revoked",
                                     form.getfirst("revocationkey"))
             html = get_template('rumpeltree.html').render(context)
-        print(html, file=stdout)
+        return [html]
+
+    return app
 
 
 def set_password(password, t0):
@@ -178,7 +185,7 @@ class Path(object):
     def __str__(self):
         return self._path
 
-    def __div__(self, other):
+    def __truediv__(self, other):
         return self.pathjoin(other)
 
 
@@ -189,6 +196,7 @@ class MockIO(object):
         self.stdout = BytesIO()
         self.existing = {}
         self._tpl = None
+        self._start = None
 
     def ops(self):
         from posixpath import abspath, dirname, join as pathjoin
@@ -217,6 +225,10 @@ class MockIO(object):
 
     def render(self, context):
         return '... render %s with %s' % (self._tpl, context)
+
+    def start_response(self, status, response_headers, exc_info=None):
+        self._start = (status, response_headers)
+        return self.stdout.write
 
 
 if __name__ == '__main__':

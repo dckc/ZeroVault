@@ -1,0 +1,15 @@
+%TAG ! tag:nuxi.nl,2015:cloudabi/
+---
+stderr: !fd stderr               # Let Python write backtraces to stderr.
+path: !file                      # Search path for Python modules.
+      path: /usr/local/x86_64-unknown-cloudabi/lib/python3.6
+args:                            # Arguments exposed as sys.argdata.
+    cwd: !file
+        path: .
+    stdout: !fd stdout
+    main: !file
+        path: index.cgi
+command: >
+    from sys import stderr, argdata;
+    print("@@hello!", file=stderr);
+    exec(argdata['main'].read())
