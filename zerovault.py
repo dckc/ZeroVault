@@ -1,20 +1,22 @@
 #!/usr/local/bin/python3
 '''
 
->>> environ = dict(HTTPS='1', REQUEST_METHOD='POST')
 >>> io = MockIO(stdin=b'password=sekret')
+>>> environ = {'HTTPS': '1', 'REQUEST_METHOD': 'POST',
+...            'wsgi.input': io.stdin}
 >>> cwd = Path('.', io.ops())
 
 >>> app = mk_app(cwd, io.now, io.FileSystemLoader)
 >>> body = app(environ, io.start_response)
 
->>> print io.stdout.getvalue()
+>>> print(io._start)
+... # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+('200 OK', [('Content-type', 'text/html'),
+            ['Set-Cookie', 'rumpelroot=...']])
+
+>>> print(''.join(body))
 ... # doctest: +ELLIPSIS
-Content-type: text/html
-Set-Cookie: rumpelroot=...
-<BLANKLINE>
-... render rumpeltree.html with {'rumpelroot': 'KEM...'}
-<BLANKLINE>
+:: render rumpeltree.html with {'rumpelroot': 'KEM...'}
 
 Note: #! line follows FreeBSD convention of putting python in /usr/local/bin
 '''
@@ -27,7 +29,7 @@ import hashlib
 import hmac
 import json
 
-#@@from jinja2 import Environment
+from jinja2 import Environment
 
 # CHANGE THIS SALT WHEN INSTALLED ON YOUR PERSONAL SERVER!
 serversalt = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOP"
@@ -54,7 +56,7 @@ def mk_app(cwd, now, FileSystemLoader):
             loader=FileSystemLoader(str(templates)),
             trim_blocks=False).get_template
 
-        form = cgi.FieldStorage(fp=stdin, environ=environ)
+        form = cgi.FieldStorage(fp=environ['wsgi.input'], environ=environ)
         if "HTTP_COOKIE" not in environ:
             if "password" not in form:
                 start_response('200 OK', [CT_HTML])
@@ -62,7 +64,7 @@ def mk_app(cwd, now, FileSystemLoader):
                 html = get_template('passwordform.html').render(context)
             else:
                 set_cookie, context = set_password(form["password"].value, now())
-                start_response('200 OK', [set_cookie.split(': ', 1)])
+                start_response('200 OK', [CT_HTML, set_cookie.split(': ', 1)])
                 html = get_template('rumpeltree.html').render(context)
         else:
             start_response('200 OK', [CT_HTML])
@@ -86,16 +88,16 @@ def set_password(password, t0):
     {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA'}
     '''
     rumpelroot = base64.b32encode(hmac.new(
-        serversalt,
-        msg=password,
-        digestmod=hashlib.sha256).digest()).strip("=")
+        serversalt.encode('utf-8'),
+        msg=password.encode('utf-8'),
+        digestmod=hashlib.sha256).digest()).decode('us-ascii').strip("=")
     cookie = cookies.SimpleCookie()
     cookie["rumpelroot"] = rumpelroot
     cookie["rumpelroot"]["domain"] = "password.capibara.com"
     cookie["rumpelroot"]["path"] = "/"
     expiration = t0 + timedelta(days=365 * 20)
     cookie["rumpelroot"]["expires"] = expiration.strftime(
-        "%a, %d-%b-%Y %H:%M:%S PST")
+        "%a, %d-%b-%Y %H:%M:%S GMT")
     context = {
       'rumpelroot': rumpelroot
     }
@@ -109,14 +111,15 @@ def vault_context(http_cookie, revocationdir, revocationkey):
 
     >>> io = MockIO()
     >>> http_cookie, _ctx = set_password('sekret', MockIO().now())
+    >>> http_cookie = http_cookie.split(': ')[1]
 
     Ordinary case:
 
     >>> vault_context(http_cookie, Path('/r', io.ops()), None)
     ... # doctest: +NORMALIZE_WHITESPACE
-    {'revocationlist': [],
-     'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA'}
-    >>> io.existing.keys()
+    {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA',
+     'revocationlist': []}
+    >>> list(io.existing.keys())
     []
 
     Incident response:
@@ -124,27 +127,27 @@ def vault_context(http_cookie, revocationdir, revocationkey):
     >>> key = '12345678901234567890123456789012'
     >>> vault_context(http_cookie, Path('/r', io.ops()), key)
     ... # doctest: +NORMALIZE_WHITESPACE
-    {'revocationlist': ['12345678901234567890123456789012'],
-     'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA'}
-    >>> io.existing.keys()
+    {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA',
+     'revocationlist': ['12345678901234567890123456789012']}
+    >>> list(io.existing.keys())
     ['/r/YUKL3QIGJ3HAGAPERA2NYK32M6QZYZI2IBRTNQTTVLMOKD7WX6DA.json']
 
     '''
     cookie = cookies.SimpleCookie(http_cookie)
     rumpelroot = cookie["rumpelroot"].value
     rumpelsub = base64.b32encode(hmac.new(
-        serversalt,
-        rumpelroot,
-        digestmod=hashlib.sha256).digest()).strip("=")
+        serversalt.encode('utf-8'),
+        rumpelroot.encode('utf-8'),
+        digestmod=hashlib.sha256).digest()).decode('utf-8').strip("=")
     revocationjsonfile = revocationdir / (rumpelsub + ".json")
     revocationlist = []
     if (revocationjsonfile.exists()):
-        with revocationjsonfile.open(mode='rb') as data_file:
+        with revocationjsonfile.open(mode='r') as data_file:
             revocationlist = json.load(data_file)
     if revocationkey is not None:
         if len(revocationkey) == 32:
             revocationlist.append(revocationkey)
-            with revocationjsonfile.open(mode='wb') as outfile:
+            with revocationjsonfile.open(mode='w') as outfile:
                 json.dump(revocationlist, outfile)
     context = {
         'rumpelroot': rumpelroot,
@@ -190,7 +193,7 @@ class Path(object):
 
 
 class MockIO(object):
-    def __init__(self, stdin=''):
+    def __init__(self, stdin=b''):
         from io import BytesIO
         self.stdin = BytesIO(stdin)
         self.stdout = BytesIO()
@@ -219,12 +222,16 @@ class MockIO(object):
         # kludge
         return self
 
+    def get_source(self, env, tpl):
+        self._tpl = tpl
+        return 'ARBITRARY SOURCE', '<template>', lambda: True
+
     def load(self, env, tpl, context):
         self._tpl = tpl
         return self
 
     def render(self, context):
-        return '... render %s with %s' % (self._tpl, context)
+        return ':: render %s with %s' % (self._tpl, context)
 
     def start_response(self, status, response_headers, exc_info=None):
         self._start = (status, response_headers)
@@ -238,13 +245,13 @@ if __name__ == '__main__':
         '''
         from datetime import datetime
         from io import open as io_open
-        from os import environ
         from os.path import abspath, dirname, join as pathjoin, exists
-        from sys import stdin, stdout
+        # TODO: CGI: from os import environ
+        # TODO: CGI: from sys import stdin, stdout
 
-        #@@from jinja2 import FileSystemLoader
+        from jinja2 import FileSystemLoader
 
         cwd = Path('.', (abspath, dirname, pathjoin, exists, io_open))
-        main(stdin, stdout, environ, cwd, datetime.now, FileSystemLoader)
+        main(cwd, datetime.now, FileSystemLoader)
 
     _script()
