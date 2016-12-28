@@ -4,9 +4,9 @@
 >>> io = MockIO(stdin=b'password=sekret')
 >>> environ = {'HTTPS': '1', 'REQUEST_METHOD': 'POST',
 ...            'wsgi.input': io.stdin}
->>> cwd = Path('.', io.ops())
+>>> templates = FdPath(3, 'templates', io.ops())
 
->>> app = mk_app(cwd, io.now, io.FileSystemLoader)
+>>> app = mk_app(templates, io.now)
 >>> body = app(environ, io.start_response)
 
 >>> print(io._start)
@@ -16,20 +16,22 @@
 
 >>> print(''.join(body))
 ... # doctest: +ELLIPSIS
-:: render rumpeltree.html with {'rumpelroot': 'KEM...'}
+blah blah KEM...
 
 Note: #! line follows FreeBSD convention of putting python in /usr/local/bin
 '''
 from datetime import timedelta
 from sys import stderr
 from http import cookies
+from os import O_RDONLY, O_WRONLY, O_CREAT
+from posixpath import join as pathjoin
 import base64
 import cgi
 import hashlib
 import hmac
 import json
 
-from jinja2 import Environment
+from jinja2 import Environment, BaseLoader, TemplateNotFound
 
 # CHANGE THIS SALT WHEN INSTALLED ON YOUR PERSONAL SERVER!
 serversalt = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOP"
@@ -38,22 +40,24 @@ CT_HTML = ('Content-type', 'text/html')
 CT_PLAIN = ('Content-type', 'text/plain')
 
 
-def main(stdin, stdout, cwd, now, FileSystemLoader):
-    raise NotImplementedError
-    # if 'SCRIPT_NAME' in environ: ...
-    cgi_main(stdin, stdout, environ, cwd, now, FileSystemLoader)
+def main(argdata, argdirs, now):
+    if 'SCRIPT_NAME' in {}:  # TODO: environ
+        raise NotImplementedError
+        cgi_main(stdin, stdout, environ, cwd, now)
+
+    app = mk_app(argdirs / 'templates', now)
+    raise NotImplementedError('TODO: wsgiref.serve_forever(app)')
 
 
-def mk_app(cwd, now, FileSystemLoader):
+def mk_app(templates, now):
     def app(environ, start_response):
         if "HTTPS" not in environ:
             start_response('403', [CT_PLAIN])
             return [err_unencrypted(environ.get('SERVERNAME'))]
 
-        templates = (cwd / __file__).resolve().parent / 'templates'
         get_template = Environment(
             autoescape=False,
-            loader=FileSystemLoader(str(templates)),
+            loader=FdPathLoader(templates),
             trim_blocks=False).get_template
 
         form = cgi.FieldStorage(fp=environ['wsgi.input'], environ=environ)
@@ -112,25 +116,29 @@ def vault_context(http_cookie, revocationdir, revocationkey):
     >>> io = MockIO()
     >>> http_cookie, _ctx = set_password('sekret', MockIO().now())
     >>> http_cookie = http_cookie.split(': ')[1]
+    >>> _d = lambda d: sorted(d.items())
 
     Ordinary case:
 
-    >>> vault_context(http_cookie, Path('/r', io.ops()), None)
+    >>> _d(vault_context(http_cookie, FdPath(0, 'r', io.ops()), None))
     ... # doctest: +NORMALIZE_WHITESPACE
-    {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA',
-     'revocationlist': []}
-    >>> list(io.existing.keys())
-    []
+    [('revocationlist', []),
+     ('rumpelroot', 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA')]
+    >>> sorted(io.content.keys())
+    [(3, 'templates/rumpeltree.html')]
 
     Incident response:
 
     >>> key = '12345678901234567890123456789012'
-    >>> vault_context(http_cookie, Path('/r', io.ops()), key)
+    >>> _d(vault_context(http_cookie, FdPath(0, 'r', io.ops()), key))
     ... # doctest: +NORMALIZE_WHITESPACE
-    {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA',
-     'revocationlist': ['12345678901234567890123456789012']}
-    >>> list(io.existing.keys())
-    ['/r/YUKL3QIGJ3HAGAPERA2NYK32M6QZYZI2IBRTNQTTVLMOKD7WX6DA.json']
+    [('revocationlist', ['12345678901234567890123456789012']),
+     ('rumpelroot', 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA')]
+    >>> sorted(io.content.keys())
+    ... # doctest: +NORMALIZE_WHITESPACE
+    [(0, 'r/YUKL3QIGJ3HAGAPERA2NYK32M6QZYZI2IBRTNQTTVLMOKD7WX6DA.json'),
+     (3, 'templates/rumpeltree.html')]
+
 
     '''
     cookie = cookies.SimpleCookie(http_cookie)
@@ -167,71 +175,104 @@ def err_unencrypted(servername):
     return html
 
 
-class Path(object):
-    '''pathlib style file API
+class FdPathLoader(BaseLoader):
+    def __init__(self, tpl_dir):
+        self._path = lambda tpl: tpl_dir / tpl
+
+    def get_source(self, environment, template):
+        path = self._path(template)
+        if not path.exists():
+            raise TemplateNotFound(template)
+        # mtime = path.stat().mtime
+        uptodate = lambda: False  # TODO: path.stat
+        with path.open(mode='rb') as f:
+            source = f.read().decode('utf-8')
+        return source, str(path), uptodate
+
+
+class FdPath(object):
+    '''pathlib style file API using dir_fd's
 
     ref https://pypi.python.org/pypi/pathlib2/
     '''
-    def __init__(self, path, ops):
-        self._path = path
-        abspath, dirname, pathjoin, exists, io_open = ops
-        self.resolve = lambda: Path(abspath(path), ops)
-        self.pathjoin = lambda other: Path(pathjoin(path, other), ops)
-        self._parent = lambda: Path(dirname(path), ops)
-        self.exists = lambda: exists(path)
-        self.open = lambda mode='r': io_open(path, mode=mode)
+    def __init__(self, dir_fd, path, ops):
+        fdopen, os_open, stat = ops
+        self.label = '%d:%s' % (dir_fd, path)
+        self.pathjoin = lambda other: FdPath(
+            dir_fd, pathjoin(path, other), ops)
 
-    @property
-    def parent(self):
-        return self._parent()
+        def exists():
+            try:
+                stat(path, dir_fd=dir_fd)
+                return True
+            except OSError:
+                return False
+        self.exists = exists
+
+        self.open = lambda mode='r': fdopen(
+            os_open(path, mode_flags(mode), dir_fd=dir_fd), mode=mode)
 
     def __str__(self):
-        return self._path
+        return '%s(%s)'% (self.__class__.__name__, self.label)
 
     def __truediv__(self, other):
         return self.pathjoin(other)
 
 
+class ArgDataPath(object):
+    def __init__(self, argdata, ops):
+        self.pathjoin = lambda other: FdPath(argdata[other], ops)
+
+    def __truediv__(self, other):
+        return self.pathjoin(other)
+
+
+def mode_flags(mode):
+    # hmm... binary on Windows?
+    return ((O_WRONLY | O_CREAT) if 'w' in mode else
+            O_RDONLY if 'r' in mode else 0)
+
+
 class MockIO(object):
-    def __init__(self, stdin=b''):
+    example = {(3, 'templates/rumpeltree.html'):
+               'blah blah {{rumpelroot}}'}
+
+    def __init__(self, stdin=b'', content=None):
         from io import BytesIO
         self.stdin = BytesIO(stdin)
         self.stdout = BytesIO()
-        self.existing = {}
-        self._tpl = None
+        self.content = self.example if content is None else content
+        self._fd = {}
         self._start = None
 
     def ops(self):
-        from posixpath import abspath, dirname, join as pathjoin
+        from posixpath import join as pathjoin
         from io import BytesIO, StringIO
 
-        def exists(p):
-            return p in self.existing
+        def stat(p, dir_fd):
+            if (dir_fd, p) in self.content:
+                return None  # TODO: stat struct, esp. mtime
+            else:
+                raise OSError
 
-        def io_open(p, mode):
+        def fdopen(fd, mode):
+            k = self._fd[fd]
             if 'w' in mode:
-                self.existing[p] = True
-            return BytesIO() if 'b' in mode else StringIO()
-        return abspath, dirname, pathjoin, exists, io_open
+                self.content[k] = ''
+            txt = self.content[k]
+            bs = txt.encode('utf-8')
+            return BytesIO(bs) if 'b' in mode else StringIO(txt)
+
+        def os_open(path, flags, dir_fd):
+            fd = 100 + len(self._fd)
+            self._fd[fd] = (dir_fd, path)
+            return fd
+
+        return fdopen, os_open, stat
 
     def now(self):
         import datetime
         return datetime.datetime(2001, 1, 1)
-
-    def FileSystemLoader(self, path):
-        # kludge
-        return self
-
-    def get_source(self, env, tpl):
-        self._tpl = tpl
-        return 'ARBITRARY SOURCE', '<template>', lambda: True
-
-    def load(self, env, tpl, context):
-        self._tpl = tpl
-        return self
-
-    def render(self, context):
-        return ':: render %s with %s' % (self._tpl, context)
 
     def start_response(self, status, response_headers, exc_info=None):
         self._start = (status, response_headers)
@@ -244,14 +285,12 @@ if __name__ == '__main__':
         from invocation as a script.
         '''
         from datetime import datetime
-        from io import open as io_open
-        from os.path import abspath, dirname, join as pathjoin, exists
+        from os import fdopen, open as os_open, stat
+        from sys import argdata
         # TODO: CGI: from os import environ
         # TODO: CGI: from sys import stdin, stdout
 
-        from jinja2 import FileSystemLoader
-
-        cwd = Path('.', (abspath, dirname, pathjoin, exists, io_open))
-        main(cwd, datetime.now, FileSystemLoader)
+        argdirs = ArgDataPath(argdata, (fdopen, os_open, stat))
+        main(argdata, argdirs, datetime.now)
 
     _script()
