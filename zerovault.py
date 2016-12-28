@@ -5,8 +5,9 @@
 >>> environ = {'HTTPS': '1', 'REQUEST_METHOD': 'POST',
 ...            'wsgi.input': io.stdin}
 >>> templates = FdPath(3, 'templates', io.ops())
+>>> revocationdir = FdPath(4, 'revoked', io.ops())
 
->>> app = mk_app(templates, io.now)
+>>> app = mk_app(templates, revocationdir, io.now)
 >>> body = app(environ, io.start_response)
 
 >>> print(io._start)
@@ -21,17 +22,25 @@ blah blah KEM...
 Note: #! line follows FreeBSD convention of putting python in /usr/local/bin
 '''
 from datetime import timedelta
-from sys import stderr
 from http import cookies
 from os import O_RDONLY, O_WRONLY, O_CREAT
 from posixpath import join as pathjoin
+from socketserver import BaseServer
+from sys import stderr, exc_info
 import base64
 import cgi
 import hashlib
 import hmac
 import json
+import logging
 
 from jinja2 import Environment, BaseLoader, TemplateNotFound
+
+import platform_stub
+platform_stub.monkey_patch_platform(platform_stub)
+from wsgiref.simple_server import WSGIServer, WSGIRequestHandler
+
+log = logging.getLogger(__name__)
 
 # CHANGE THIS SALT WHEN INSTALLED ON YOUR PERSONAL SERVER!
 serversalt = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOP"
@@ -41,26 +50,34 @@ CT_PLAIN = ('Content-type', 'text/plain')
 
 
 def main(argdata, argdirs, now):
+    log.debug('main(argdata=%s)', argdata)
     if 'SCRIPT_NAME' in {}:  # TODO: environ
         raise NotImplementedError
         cgi_main(stdin, stdout, environ, cwd, now)
 
-    app = mk_app(argdirs / 'templates', now)
-    raise NotImplementedError('TODO: wsgiref.serve_forever(app)')
+    app = mk_app(argdirs / 'templates', argdirs / 'revoked', now)
+
+    with Server(argdata['socket'], app) as httpd:
+        log.info('Serving on %s', httpd.socket.getsockname())
+        httpd.serve_forever()
 
 
-def mk_app(templates, now):
+def mk_app(templates, revocationdir, now,
+           DEBUGGING=True):
+    get_template = Environment(
+        autoescape=False,
+        loader=FdPathLoader(templates),
+        trim_blocks=False).get_template
+
     def app(environ, start_response):
-        if "HTTPS" not in environ:
-            start_response('403', [CT_PLAIN])
+        log.debug('handling request. environ keys: %s', environ.keys())
+        if "HTTPS" not in environ and not DEBUGGING:
+            start_response('403 Forbidden', [CT_PLAIN])
             return [err_unencrypted(environ.get('SERVERNAME'))]
 
-        get_template = Environment(
-            autoescape=False,
-            loader=FdPathLoader(templates),
-            trim_blocks=False).get_template
-
+        # TODO: address LC_TYPE issue
         form = cgi.FieldStorage(fp=environ['wsgi.input'], environ=environ)
+        log.debug('form keys: %s', form.keys())
         if "HTTP_COOKIE" not in environ:
             if "password" not in form:
                 start_response('200 OK', [CT_HTML])
@@ -73,7 +90,7 @@ def mk_app(templates, now):
         else:
             start_response('200 OK', [CT_HTML])
             context = vault_context(environ["HTTP_COOKIE"],
-                                    cwd.resolve().parent / "revoked",
+                                    revocationdir,
                                     form.getfirst("revocationkey"))
             html = get_template('rumpeltree.html').render(context)
         return [html]
@@ -172,7 +189,7 @@ def err_unencrypted(servername):
                 servername + "/\">HTTPS site</A>!")
     else:
         html = "<H2>OOPS</H2>Broken server setup. No SERVER_NAME set."
-    return html
+    return html.encode('utf-8')
 
 
 class FdPathLoader(BaseLoader):
@@ -180,6 +197,7 @@ class FdPathLoader(BaseLoader):
         self._path = lambda tpl: tpl_dir / tpl
 
     def get_source(self, environment, template):
+        log.debug('get_source(%s)', template)
         path = self._path(template)
         if not path.exists():
             raise TemplateNotFound(template)
@@ -221,7 +239,7 @@ class FdPath(object):
 
 class ArgDataPath(object):
     def __init__(self, argdata, ops):
-        self.pathjoin = lambda other: FdPath(argdata[other], ops)
+        self.pathjoin = lambda other: FdPath(argdata[other], '.', ops)
 
     def __truediv__(self, other):
         return self.pathjoin(other)
@@ -231,6 +249,30 @@ def mode_flags(mode):
     # hmm... binary on Windows?
     return ((O_WRONLY | O_CREAT) if 'w' in mode else
             O_RDONLY if 'r' in mode else 0)
+
+
+class Server(WSGIServer):
+    # TODO: move this out of _script()
+    # once we
+    def __init__(self, socket, app):
+        log.debug('Server.__init__(%s, %s)', socket, app.__name__)
+        BaseServer.__init__(self, None, WSGIRequestHandler)
+        self.socket = socket
+        self.application = app
+
+    def get_request(self):
+        log.debug('get_request...')
+        out = self.socket.accept()
+        log.debug('got: %s', out)
+        self.server_address = self.socket.getsockname()
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+        self.setup_environ()
+        return out
+
+    def handle_error(self, request, client_address):
+        log.error('OOPS!', exc_info=exc_info())
 
 
 class MockIO(object):
@@ -289,6 +331,9 @@ if __name__ == '__main__':
         from sys import argdata
         # TODO: CGI: from os import environ
         # TODO: CGI: from sys import stdin, stdout
+
+        logging.basicConfig(level=logging.DEBUG, stream=stderr)
+        log.debug('Logging configured.')
 
         argdirs = ArgDataPath(argdata, (fdopen, os_open, stat))
         main(argdata, argdirs, datetime.now)
