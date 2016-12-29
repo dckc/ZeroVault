@@ -13,11 +13,11 @@
 >>> print(io._start)
 ... # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
 ('200 OK', [('Content-type', 'text/html'),
-            ['Set-Cookie', 'rumpelroot=...']])
+            ('Set-Cookie', 'rumpelroot=...')])
 
->>> print(''.join(body))
+>>> print(b''.join(body))
 ... # doctest: +ELLIPSIS
-blah blah KEM...
+b'blah blah KEM...'
 
 Note: #! line follows FreeBSD convention of putting python in /usr/local/bin
 '''
@@ -75,7 +75,6 @@ def mk_app(templates, revocationdir, now,
             start_response('403 Forbidden', [CT_PLAIN])
             return [err_unencrypted(environ.get('SERVERNAME'))]
 
-        # TODO: address LC_TYPE issue
         form = cgi.FieldStorage(fp=environ['wsgi.input'], environ=environ)
         log.debug('form keys: %s', form.keys())
         if "HTTP_COOKIE" not in environ:
@@ -84,8 +83,9 @@ def mk_app(templates, revocationdir, now,
                 context = {}
                 html = get_template('passwordform.html').render(context)
             else:
-                set_cookie, context = set_password(form["password"].value, now())
-                start_response('200 OK', [CT_HTML, set_cookie.split(': ', 1)])
+                set_cookie, context = set_password(form["password"].value,
+                                                   now())
+                start_response('200 OK', [CT_HTML, set_cookie])
                 html = get_template('rumpeltree.html').render(context)
         else:
             start_response('200 OK', [CT_HTML])
@@ -93,7 +93,7 @@ def mk_app(templates, revocationdir, now,
                                     revocationdir,
                                     form.getfirst("revocationkey"))
             html = get_template('rumpeltree.html').render(context)
-        return [html]
+        return [html.encode('utf-8')]
 
     return app
 
@@ -102,9 +102,9 @@ def set_password(password, t0):
     '''Build cookie header, template context for a new password.
 
     >>> header, ctx = set_password('sekret', MockIO().now())
-    >>> header
+    >>> header[1]
     ... # doctest: +ELLIPSIS
-    'Set-Cookie: rumpelroot=KEM...; Domain=pass...; expires=...2020...; Path=/'
+    'rumpelroot=KEM...; Domain=pass...; expires=...2020...; Path=/'
     >>> ctx
     {'rumpelroot': 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA'}
     '''
@@ -122,7 +122,7 @@ def set_password(password, t0):
     context = {
       'rumpelroot': rumpelroot
     }
-    return cookie.output(), context
+    return tuple(cookie.output().split(': ', 1)), context
 
 
 def vault_context(http_cookie, revocationdir, revocationkey):
@@ -132,12 +132,11 @@ def vault_context(http_cookie, revocationdir, revocationkey):
 
     >>> io = MockIO()
     >>> http_cookie, _ctx = set_password('sekret', MockIO().now())
-    >>> http_cookie = http_cookie.split(': ')[1]
     >>> _d = lambda d: sorted(d.items())
 
     Ordinary case:
 
-    >>> _d(vault_context(http_cookie, FdPath(0, 'r', io.ops()), None))
+    >>> _d(vault_context(http_cookie[1], FdPath(0, 'r', io.ops()), None))
     ... # doctest: +NORMALIZE_WHITESPACE
     [('revocationlist', []),
      ('rumpelroot', 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA')]
@@ -147,7 +146,7 @@ def vault_context(http_cookie, revocationdir, revocationkey):
     Incident response:
 
     >>> key = '12345678901234567890123456789012'
-    >>> _d(vault_context(http_cookie, FdPath(0, 'r', io.ops()), key))
+    >>> _d(vault_context(http_cookie[1], FdPath(0, 'r', io.ops()), key))
     ... # doctest: +NORMALIZE_WHITESPACE
     [('revocationlist', ['12345678901234567890123456789012']),
      ('rumpelroot', 'KEM23BBQKBRTKNKY4KVEQ465DKYI26FWEDY3HZGCFXOXBJCSYSNA')]
