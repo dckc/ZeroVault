@@ -1,4 +1,11 @@
-'''
+'''platform_stub - enough of platform for wsgi.simple_server
+
+The `wsgiref.simple_server` module appeals to ambient authority,
+platform.python_implementation(), to compute a value for
+$SERVER_SOFTWARE. In doing so, `platform` drags in `subprocess`
+which drags in `signal` which does some `enum` magic that
+blew up:
+
 [zerovault] vagrant@:~/ZeroVault % cloudabi-run /usr/local/x86_64-unknown-cloudabi/bin/python3 < zv.yaml
 Traceback (most recent call last):
   File "<script>", line 29, in <module>
@@ -11,10 +18,10 @@ Traceback (most recent call last):
   File "enum.py", line 384, in _create_
 IndexError: list index out of range
 
-gevent is cited as a case where monkey-patching is worthwhile. If the
-socket module used ocap for gethostbyname, of course this wouldn't be
-necessary.
-http://stackoverflow.com/a/11977492
+[gevent is cited](http://stackoverflow.com/a/11977492) as a case where
+monkey-patching is worthwhile. If the socket module used ocap for
+gethostbyname, of course this wouldn't be necessary.
+
 '''
 
 def python_implementation():
@@ -26,5 +33,3 @@ def monkey_patch_platform(this_module):
     modules['platform'] = this_module
     from platform import python_implementation
     assert python_implementation()  # test
-
-
