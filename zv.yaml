@@ -11,6 +11,8 @@ path:
 args:                            # Arguments exposed as sys.argdata.
     templates: !file
         path: templates
+    static: !file
+        path: .
     revoked: !file
         path: revoked
     socket: !socket

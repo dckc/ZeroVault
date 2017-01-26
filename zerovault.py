@@ -51,14 +51,16 @@ def main(argdata, argdirs, now):
         raise NotImplementedError
         # cgi_main(stdin, stdout, environ, cwd, now)
 
-    app = mk_app(argdirs / 'templates', argdirs / 'revoked', now)
+    app = mk_app(argdirs / 'templates',
+                     argdirs / 'static',
+                     argdirs / 'revoked', now)
 
     with wsgip.Server(argdata['socket'], app) as httpd:
         log.info('Serving on %s', httpd.socket.getsockname())
         httpd.serve_forever()
 
 
-def mk_app(templates, revocationdir, now,
+def mk_app(templates, static, revocationdir, now,
            DEBUGGING=True):
     get_template = Environment(
         autoescape=False,
@@ -66,10 +68,22 @@ def mk_app(templates, revocationdir, now,
         trim_blocks=False).get_template
 
     def app(environ, start_response):
-        log.debug('handling request. environ keys: %s', environ.keys())
+        log.debug('handling request.')
+        # log.debug('environ keys: %s', environ.keys())
         if "HTTPS" not in environ and not DEBUGGING:
             start_response('403 Forbidden', [CT_PLAIN])
             return [err_unencrypted(environ.get('SERVERNAME'))]
+
+        path = environ.get('PATH_INFO', '/')[1:]
+        log.debug('path: %s', path)
+        for (ext, ct) in [('.js', 'application/javascript'),
+                          ('.jpg', 'image/jpeg')]:
+            if path.endswith(ext):
+                start_response('200 OK', [('Content-Type', ct)])
+                with (static / path).open('rb') as res:
+                    body = res.read()
+                    log.debug('static body length: %s', len(body))
+                    return [body]
 
         form = cgi.FieldStorage(fp=environ['wsgi.input'], environ=environ)
         log.debug('form keys: %s', form.keys())
