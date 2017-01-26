@@ -23,4 +23,13 @@ You may install ZeroVault on your own HTTPS web server or use the one on https:/
 * Create a 'revoked' directory one directory up from your document root and make this directory writable for the uuid your server runs under.
 * Edit index.cgi so that your server uses a unique salt
 
+## CloudABI
+
+@@blah blah...
+
+### FreeBSD using Vagrant
+
+sudo kldload cloudabi64
+
+cloudabi-run /usr/local/x86_64-unknown-cloudabi/bin/python3 < zv.yaml
 
