@@ -5,9 +5,10 @@
 >>> environ = {'HTTPS': '1', 'REQUEST_METHOD': 'POST',
 ...            'wsgi.input': io.stdin}
 >>> templates = iop.FdPath(3, 'templates', io.ops())
+>>> static = iop.FdPath(5, '.', io.ops())
 >>> revocationdir = iop.FdPath(4, 'revoked', io.ops())
 
->>> app = mk_app(templates, revocationdir, io.now)
+>>> app = mk_app(templates, static, revocationdir, io.now)
 >>> body = app(environ, io.start_response)
 
 >>> print(io._start)
