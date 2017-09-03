@@ -239,8 +239,7 @@ if __name__ == '__main__':
         from invocation as a script.
         '''
         from datetime import datetime
-        from io import open as io_open
-        from os import fdopen, stat
+        from os import fdopen, open as os_open, stat
         from sys import argdata
         # TODO: CGI: from os import environ
         # TODO: CGI: from sys import stdin, stdout
@@ -253,7 +252,7 @@ if __name__ == '__main__':
         # providing them as sys.argdata. So we need dir_args to know
         # which ones to convert back.
         args = {
-            k: (iop.FdPath(v, (fdopen, io_open, stat))
+            k: (iop.FdPath(v, (fdopen, os_open, stat))
                 if k in dir_args else v)
             for k, v in argdata.items()}
         main(now=datetime.now, **args)
