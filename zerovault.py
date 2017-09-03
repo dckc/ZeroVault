@@ -46,17 +46,14 @@ CT_HTML = ('Content-type', 'text/html')
 CT_PLAIN = ('Content-type', 'text/plain')
 
 
-def main(argdata, argdirs, now):
-    log.debug('main(argdata=%s)', argdata)
+def main(now, templates, static, revoked, socket):
     if 'SCRIPT_NAME' in {}:  # TODO: environ
         raise NotImplementedError
         # cgi_main(stdin, stdout, environ, cwd, now)
 
-    app = mk_app(argdirs / 'templates',
-                     argdirs / 'static',
-                     argdirs / 'revoked', now)
+    app = mk_app(templates, static, revoked, now)
 
-    with wsgip.Server(argdata['socket'], app) as httpd:
+    with wsgip.Server(socket, app) as httpd:
         log.info('Serving on %s', httpd.socket.getsockname())
         httpd.serve_forever()
 
@@ -236,12 +233,14 @@ class MockIO(iop.MockIO):
 
 
 if __name__ == '__main__':
-    def _script():
+    def _script(
+            dir_args=['templates', 'static', 'revoked']):
         '''Access to ambient authority derives
         from invocation as a script.
         '''
         from datetime import datetime
-        from os import fdopen, open as os_open, stat
+        from io import open as io_open
+        from os import fdopen, stat
         from sys import argdata
         # TODO: CGI: from os import environ
         # TODO: CGI: from sys import stdin, stdout
@@ -249,7 +248,14 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.DEBUG, stream=stderr)
         log.debug('Logging configured.')
 
-        argdirs = iop.ArgDataPath(argdata, (fdopen, os_open, stat))
-        main(argdata, argdirs, datetime.now)
+        # The cloudabi python port (as of 758bcea on Jun 21) throws
+        # away the distinction between directory fds and integers when
+        # providing them as sys.argdata. So we need dir_args to know
+        # which ones to convert back.
+        args = {
+            k: (iop.FdPath(v, (fdopen, io_open, stat))
+                if k in dir_args else v)
+            for k, v in argdata.items()}
+        main(now=datetime.now, **args)
 
     _script()
