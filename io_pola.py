@@ -49,33 +49,6 @@ class FdPath(object):
         return self.pathjoin(other)
 
 
-class ArgDataPath(object):
-    '''Access directories "under" argdata.
-
-    Suppose we have a directory fd in argdata:
-
-    >>> argdata = {'input': 0}
-    >>> io = MockIO()
-
-    ArgDataPath lets us treat the keys of argdata as path segments:
-
-    >>> argp = ArgDataPath(argdata, io.ops())
-    >>> input = argp / 'input'
-
-    Now we can access files under the directory fd:
-
-    >>> f1 = input / 'subdir1' / 'f1'
-    >>> f1.open().read()
-    'blah blah'
-
-    '''
-    def __init__(self, argdata, ops):
-        self.pathjoin = lambda other: FdPath(argdata[other], '', ops)
-
-    def __truediv__(self, other):
-        return self.pathjoin(other)
-
-
 def mode_flags(mode):
     # hmm... binary on Windows?
     return ((O_WRONLY | O_CREAT) if 'w' in mode else
